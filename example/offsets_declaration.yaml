@@ -1,0 +1,23 @@
+version: 1.0
+min_kernel: 4.15
+max_kernel: 4.15
+offsets:
+  - offset_symbol: task_struct__pid
+    structure_name: task_struct
+    member_name: pid
+    include_paths:
+      - "<linux/sched.h>"
+    variable_kernel_parameters:
+      - [CONFIG_THREAD_INFO_IN_TASK, CONFIG_SMP]
+      - [CONFIG_CGROUP_SCHED]
+      - [CONFIG_UCLAMP_TASK]
+      - [CONFIG_PREEMPT_NOTIFIERS]
+      - [CONFIG_BLK_DEV_IO_TRACE]
+      - [CONFIG_PREEMPT_RCU]
+      - [CONFIG_TASKS_RCU]
+      - [SPLIT_RSS_COUNTING]
+      - [CONFIG_PSI]
+      - [CONFIG_MEMCG]
+      - [CONFIG_COMPAT_BRK]
+      - [CONFIG_CGROUPS]
+      - [CONFIG_BLK_CGROUP]
