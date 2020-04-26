@@ -1,6 +1,6 @@
 version: 1.0
 min_kernel: 4.15.0
-max_kernel: 4.18.0
+max_kernel: 4.17.10
 offsets:
   - offset_symbol: task_struct__pid
     structure_name: task_struct
