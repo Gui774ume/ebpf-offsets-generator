@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 
+	"github.com/Gui774ume/ebpf-offsets-generator/pkg/extractor"
+
 	"github.com/Gui774ume/ebpf-offsets-generator/pkg/generator"
 
 	"github.com/sirupsen/logrus"
@@ -15,8 +17,9 @@ func main() {
 	template := flag.String("template", "./template/main.c", "c template path")
 	templateStatic := flag.String("templateStatic", "./template/bpf", "template static files to copy next to the generated programs")
 	tmpFolder := flag.String("temporaryFolder", "./tmp", "temporary folder")
-	outputFolder := flag.String("profile", "", "output folder")
+	offsetsOutput := flag.String("output", "./generated_offsets.yaml", "output file to which the generated offsets will be written")
 	purge := flag.Bool("purge", false, "purges the Linux Kernel repository and clones it again")
+	provider := flag.String("headerProvider", "ubuntu", "specifies the header provider to use")
 	flag.Parse()
 
 	// Set log verbose level
@@ -30,12 +33,12 @@ func main() {
 	// Create offsets generator
 	og, err := generator.NewOffsetsGeneratorWithOptions(
 		&generator.OffsetsGeneratorOptions{
-			OutputFolder:           *outputFolder,
 			OffsetsDeclarationPath: *offsets,
 			TemplatePath:           *template,
 			TemporaryFolder:        *tmpFolder,
 			PurgeKernelRepository:  *purge,
 			TemplateStatic:         *templateStatic,
+			HeaderProvider:         *provider,
 		},
 	)
 	if err != nil {
@@ -44,9 +47,20 @@ func main() {
 	}
 
 	// Compute offsets
-	_, err = og.ComputeOffsets()
+	db, err := og.ComputeOffsets()
 	if err != nil {
 		logrus.Errorf("couldn't start offsets generator: %v", err)
 	}
+	if err := db.DumpSymbol("task_struct__pid"); err != nil {
+		logrus.Errorf("couldn't dump generated offsets: %v\n", err)
+	}
+
+	if offsetsOutput != nil {
+		// Export the generated database to a file
+		if err := extractor.ExportOffsetsDatabaseToFile(db, *offsetsOutput); err != nil {
+			logrus.Errorf("failed to export the generated offsets to %s: %v", *offsetsOutput, err)
+		}
+	}
+	logrus.Printf("offsets successfully exported to %s!\n", *offsetsOutput)
 	return
 }

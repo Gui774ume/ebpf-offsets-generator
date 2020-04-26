@@ -5,14 +5,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 
-	"gopkg.in/src-d/go-git.v4/plumbing"
-
+	"github.com/Gui774ume/ebpf"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/src-d/go-git.v4"
 
+	"github.com/Gui774ume/ebpf-offsets-generator/pkg/headersproviders"
 	"github.com/Gui774ume/ebpf-offsets-generator/pkg/model"
 	"github.com/Gui774ume/ebpf-offsets-generator/pkg/utils"
 )
@@ -28,18 +26,17 @@ type OffsetsGenerator struct {
 	OffsetsDeclaration model.OffsetsDeclaration
 	options            *OffsetsGeneratorOptions
 	cTemplate          *template.Template
-	repository         *git.Repository
-	tree               *git.Worktree
+	provider           model.HeadersProvider
 }
 
 // OffsetsGeneratorOptions - Offsets generator option structure
 type OffsetsGeneratorOptions struct {
 	OffsetsDeclarationPath string
-	OutputFolder           string
 	TemplatePath           string
 	TemplateStatic         string
 	TemporaryFolder        string
 	PurgeKernelRepository  bool
+	HeaderProvider         string
 }
 
 // NewOffsetsGeneratorWithOptions - Creates a new Offsets Generator with the provided options
@@ -51,6 +48,13 @@ func NewOffsetsGeneratorWithOptions(options *OffsetsGeneratorOptions) (*OffsetsG
 	if err := model.ReadDeclarationFile(options.OffsetsDeclarationPath, &og.OffsetsDeclaration); err != nil {
 		return nil, err
 	}
+	// Select the header provider
+	var ok bool
+	og.provider, ok = headersproviders.Providers[options.HeaderProvider]
+	if !ok {
+		return nil, errors.Errorf("unknown header provider: %s", options.HeaderProvider)
+	}
+	og.provider.SetTmpPath(path.Join(options.TemporaryFolder, "headers"))
 	return &og, nil
 }
 
@@ -62,11 +66,7 @@ func (og *OffsetsGenerator) ComputeOffsets() (*model.OffsetsDatabase, error) {
 		return nil, err
 	}
 	// 2) Check out each requested kernel version, compile the c programs generated above with each kernel and compute offsets.
-	computedOffsets, err := og.CompileAndRunPrograms(programs)
-	if err != nil {
-		return nil, err
-	}
-	return computedOffsets, nil
+	return og.CompileAndExtractOffsets(programs)
 }
 
 // GenerateOffsetsPrograms - Generate the offsets programs used to compute the provided offsets
@@ -114,175 +114,96 @@ func (og *OffsetsGenerator) generateOffsetPrograms(generatedProgramsPath string,
 		return programs, err
 	}
 
-	// Generate all the possible combinations of the kernel config parameters
-	combinations := [][]string{}
-	for _, params := range offset.VariableKernelParameters {
-		combinations = append(combinations, utils.GenerateCombinations(params)...)
-	}
-
 	// Generate the c programs from the template
-	for _, combination := range combinations {
-		outputPath := path.Join(tmpPath, strings.Join(combination, "-")) + ".c"
-		outputFile, err := os.Create(outputPath)
-		if err != nil {
-			logrus.Warnf("couldn't create %s: %v\n", outputPath, err)
-			return programs, err
-		}
-		data := model.TemplateData{
-			KernelConfig: combination,
-			Offset:       offset,
-		}
-		if err := og.cTemplate.Execute(outputFile, data); err != nil {
-			logrus.Warnf("couldn't execute template for %s: %v\n", outputPath, err)
-			return programs, err
-		}
-		prog := model.OffsetProgram{
-			Offset:       offset,
-			KernelConfig: combination,
-			ProgramPath:  outputPath,
-		}
-		programs = append(programs, &prog)
+	outputPath := path.Join(tmpPath, offset.OffsetSymbol) + ".c"
+	outputFile, err := os.Create(outputPath)
+	if err != nil {
+		logrus.Warnf("couldn't create %s: %v\n", outputPath, err)
+		return programs, err
 	}
+	data := model.TemplateData{
+		Offset: offset,
+	}
+	if err := og.cTemplate.Execute(outputFile, data); err != nil {
+		logrus.Warnf("couldn't execute template for %s: %v\n", outputPath, err)
+		return programs, err
+	}
+	prog := model.OffsetProgram{
+		Offset:      offset,
+		ProgramPath: outputPath,
+	}
+	programs = append(programs, &prog)
 	return programs, nil
 }
 
-// CompileAndRunPrograms - Compiles and runs the provided programs with each kernel version
-func (og *OffsetsGenerator) CompileAndRunPrograms(programs []*model.OffsetProgram) (*model.OffsetsDatabase, error) {
-	var err error
-	// 1) Clone or open the linux kernel repository
-	if og.repository, err = og.cloneOrOpenKernelRepository(); err != nil {
-		return nil, err
-	}
-	if og.tree, err = og.repository.Worktree(); err != nil {
-		return nil, err
-	}
-	// 2) Compute the ranges that we need to compile the programs against
-	ranges, err := og.computeVersionRanges()
-	if err != nil {
-		return nil, err
-	}
-	// 3) Loop through all the kernel versions, compile and run the programs
-	for _, kvr := range ranges {
-		iter := kvr.Iter()
-		for {
-			version := iter.NextMinor()
-			if version == nil {
-				break
-			}
-			if err := og.CheckoutKernelVersion(version); err != nil {
-				logrus.Errorf("couldn't checkout branch %s: %s\n", version.ReferenceName(), err)
+// CompileAndExtractOffsets - Compiles the provided programs with the right headers and extract the generated offsets
+func (og *OffsetsGenerator) CompileAndExtractOffsets(programs []*model.OffsetProgram) (*model.OffsetsDatabase, error) {
+	offsetsDatabase := model.NewOffsetsDatabase(og.OffsetsDeclaration.Version, og.options.HeaderProvider)
+	// Loop through all the kernel versions, compile and run the programs
+	for _, kv := range og.provider.KernelVersionsList() {
+		// Check if the version is in the input range
+		if !og.OffsetsDeclaration.GetKernelVersionRange().Contains(kv) {
+			continue
+		}
+		logrus.Printf("working on version %v ...\n", kv)
+		// Pulls the headers for the current version
+		headers, err := og.provider.PullHeaders(kv)
+		if err != nil {
+			logrus.Errorf("couldn't pull headers: %v", err)
+			continue
+		}
+		for _, program := range programs {
+			// Compile and extract the offset
+			offset, err := og.compileAndExtractOffset(program, headers, kv)
+			if err != nil {
+				logrus.Errorf("couldn't compute offset for program %s and version %s: %s\n", program.ProgramPath, kv, err)
 				continue
 			}
-			for _, program := range programs {
-				if err := og.CompileAndRunProgram(program); err != nil {
-					logrus.Errorf("couldn't compute offset for program %s and version %s: %s\n", err)
-					continue
-				}
-			}
+			logrus.Printf("generated offset for %s and kernel version %s: %v\n", program.Offset.OffsetSymbol, kv, offset.Offset)
+			// Add offset to the database
+			offsetsDatabase.Insert(*offset)
 		}
 	}
-	return nil, nil
+	return offsetsDatabase, nil
 }
 
-// cloneOrOpenKernelRepository - Clones or open the kernel repository
-func (og *OffsetsGenerator) cloneOrOpenKernelRepository() (*git.Repository, error) {
-	kernelPath := path.Join(og.options.TemporaryFolder, linuxKernelPath)
-	var err error
-	// Check if the repository exists
-	if _, err = os.Stat(kernelPath); err == nil {
-		// This means that the repository is already present, check if it should be purged
-		if og.options.PurgeKernelRepository {
-			logrus.Println("purging kernel repository ...")
-			if err = os.RemoveAll(kernelPath); err != nil {
-				return nil, err
-			}
-		} else {
-			// Try to open the repository
-			logrus.Println("opening kernel repository ...")
-			return git.PlainOpen(kernelPath)
-		}
-	}
-	if err = os.MkdirAll(kernelPath, os.ModePerm); err != nil {
-		logrus.Warnf("couldn't generate temporary path %s: %v\n", kernelPath, err)
+// compileAndExtractOffset - Compiles the input program with the input headers, returns the generated offset
+func (og *OffsetsGenerator) compileAndExtractOffset(program *model.OffsetProgram, headers []string, kv model.KernelVersion) (*model.GeneratedOffset, error) {
+	// Generate output path
+	outputRoot, outputFilename := path.Split(program.ProgramPath)
+	outputRoot = path.Join(outputRoot, kv.String())
+	if err := os.MkdirAll(outputRoot, os.ModePerm); err != nil {
 		return nil, err
 	}
-	logrus.Printf("cloning the Linux Kernel repository ...\n")
-	repository, err := git.PlainClone(kernelPath, false, &git.CloneOptions{
-		URL:      linuxKernelGithub,
-		Progress: os.Stdout,
-		Depth:    1,
-	})
-	if err != nil && err != git.ErrRepositoryAlreadyExists {
-		return nil, err
+	ext := path.Ext(outputFilename)
+	if len(ext) > 0 {
+		outputFilename = outputFilename[:len(outputFilename)-len(ext)]
 	}
-	logrus.Printf("cloning done!\n")
-	return repository, nil
-}
+	outputFilename = outputFilename + ".o"
+	program.BinaryPath = path.Join(outputRoot, outputFilename)
 
-// computeVersionRanges - Computes the ranges of versions that the programs need to be compiled against
-func (og *OffsetsGenerator) computeVersionRanges() ([]model.KernelVersionRange, error) {
-	inputRange := og.OffsetsDeclaration.GetKernelVersionRange()
-	var ranges []model.KernelVersionRange
-	rangeTmp := model.KernelVersionRange{
-		MinVersion: &model.KernelVersion{
-			Major: inputRange.MinVersion.Major,
-			Minor: inputRange.MinVersion.Minor,
-		},
-		MaxVersion: &model.KernelVersion{
-			Major: inputRange.MinVersion.Major,
-			Minor: inputRange.MinVersion.Minor,
-		},
+	// Compile eBPF program
+	if err := compile(program, headers); err != nil {
+		return nil, errors.Wrapf(err, "couldn't compile program %s with kernel version %v", program.Offset.OffsetSymbol, kv)
 	}
-	// Loop through the input kernel versions
-	logrus.Printf("checking available kernel versions for input range: %s\n", inputRange)
-	iter := inputRange.Iter()
-	for {
-		next := iter.NextMinor()
-		if next == nil {
-			// Append the current rangeTmp to the list of computed ranges
-			ranges = append(ranges, rangeTmp)
-			break
-		}
-		// Check if the next version exists
-		if _, err := og.repository.Tag(next.String()); err != nil {
-			// Append the current rangeTmp to the list of computed ranges
-			ranges = append(ranges, rangeTmp)
-			// check the next Major version
-			next = iter.NextMajor()
-			if next == nil {
-				break
-			}
-			if _, err := og.repository.Tag(next.String()); err != nil {
-				break
-			}
-			// Prepare the new kernel version range
-			rangeTmp = model.KernelVersionRange{
-				MinVersion: &model.KernelVersion{
-					Major: next.Major,
-					Minor: next.Minor,
-				},
-			}
-		}
-		// Extend the temporary range to include the current "next" cursor
-		rangeTmp.ExtendMaxKernelVersion(*next)
+
+	// Extract generated offset
+	spec, err := ebpf.LoadCollectionSpec(program.BinaryPath)
+	if err != nil {
+		return nil, errors.Wrapf(err, "couldn't load eBPF program %s build for kernel version %v", program.Offset.OffsetSymbol, kv)
 	}
-	logrus.Printf("available ranges: %v\n", ranges)
-	return ranges, nil
-}
-
-// CheckoutKernelVersion - Checkout to the provided kernel version
-func (og *OffsetsGenerator) CheckoutKernelVersion(version *model.KernelVersion) error {
-	logrus.Tracef("checking out kernel version: %s\n", version)
-	return og.tree.Checkout(&git.CheckoutOptions{
-		Branch: plumbing.ReferenceName(version.ReferenceName()),
-		Force:  true,
-	})
-}
-
-// CompileAndRunProgram - Compile the provided program and run it to compute its offset
-func (og *OffsetsGenerator) CompileAndRunProgram(program *model.OffsetProgram) error {
-	// Compile program
-	logrus.Tracef("compiling: %s %v\n", program.Offset.OffsetSymbol, program.KernelConfig)
-	// Run program
-	return nil
+	prog := spec.Programs["tracepoint/syscalls/sys_enter_execve"]
+	if prog == nil {
+		return nil, errors.Errorf("couldn't find eBPF program in %s", program.BinaryPath)
+	}
+	// The eBPF program was designed so that the first constant of the first instruction is the offset we are looking for
+	if len(prog.Instructions) == 0 {
+		return nil, errors.Errorf("coulnd't find the first instruction of the eBPF program in %s", program.BinaryPath)
+	}
+	return &model.GeneratedOffset{
+		MinKernelVersion: kv,
+		MaxKernelVersion: kv,
+		Offset:           prog.Instructions[0].Constant,
+		OffsetSymbol:     program.Offset.OffsetSymbol,
+	}, nil
 }

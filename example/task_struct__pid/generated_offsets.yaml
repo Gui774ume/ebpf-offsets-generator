@@ -1,0 +1,19 @@
+version: "1.0"
+provider: ubuntu
+generated_offsets:
+  task_struct__pid:
+  - min_kernel: v4.15
+    max_kernel: v4.15.5
+    offset: 2280
+  - min_kernel: v4.15.7
+    max_kernel: v4.15.18
+    offset: 2280
+  - min_kernel: v4.16
+    max_kernel: v4.16.3
+    offset: 2280
+  - min_kernel: v4.16.4
+    max_kernel: v4.16.18
+    offset: 2216
+  - min_kernel: v4.17
+    max_kernel: v4.17.10
+    offset: 2216

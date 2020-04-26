@@ -35,17 +35,15 @@ func (od OffsetsDeclaration) GetKernelVersionIter() KernelVersionIter {
 
 // OffsetDeclaration - Offset declaration structure
 type OffsetDeclaration struct {
-	OffsetSymbol             string     `yaml:"offset_symbol"`
-	StructureName            string     `yaml:"structure_name"`
-	MemberName               string     `yaml:"member_name"`
-	IncludePaths             []string   `yaml:"include_paths"`
-	VariableKernelParameters [][]string `yaml:"variable_kernel_parameters"`
+	OffsetSymbol  string   `yaml:"offset_symbol"`
+	StructureName string   `yaml:"structure_name"`
+	MemberName    string   `yaml:"member_name"`
+	IncludePaths  []string `yaml:"include_paths"`
 }
 
 // TemplateData - Template Data provided to the template to generate the c programs
 type TemplateData struct {
-	Offset       OffsetDeclaration
-	KernelConfig []string
+	Offset OffsetDeclaration
 }
 
 // ReadDeclarationFile - Read the provided offsets declaration file and populates the provided OffsetsDeclaration instance
