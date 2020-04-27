@@ -41,7 +41,59 @@ make build
 1) Provide the list of struct members that you want the program to compute, as well as the range of kernels you are interested in. As the name of some members sometimes change overtime, you will soon be able to define a `fallback` member name. Available options are listed below.
 
 ```shell script
-./bin/offsets-generator --offsets="example/task_struct__pid/offsets_declaration.yaml" --output="example/task_struct__pid/generated_offsets.yaml"
+./bin/offsets-generator --offsets="<path_to_your_offsets_declaration>.yaml" --output="<output_file>.yaml"
 ```
 
 3) [Gui774ume/ebpf](https://github.com/Gui774ume/ebpf) has an [Editor](https://godoc.org/github.com/Gui774ume/ebpf#Editor) feature that can be used to push the generated offsets in constants at runtime, without having to re-compile your programs.
+
+## Example
+
+We provided an example for the `pid` member of the `task_struct` structure. You can run the example with the following command:
+
+```shell script
+./bin/offsets-generator --offsets="example/task_struct__pid/offsets_declaration.yaml" --output="example/task_struct__pid/generated_offsets.yaml"
+```
+
+`offsets_declaration.yaml`:
+
+```yaml
+version: 1.0
+min_kernel: 4.15.0
+max_kernel: 4.17.10
+offsets:
+  - offset_symbol: task_struct__pid
+    structure_name: task_struct
+    member_name: pid
+    include_paths:
+      - "<linux/ptrace.h>"
+      - "<linux/sched.h>"
+```
+
+`generated_offsets.yaml`:
+
+```yaml
+version: "1.0"
+provider: ubuntu
+generated_offsets:
+  task_struct__pid:
+  - min_kernel: v4.15
+    max_kernel: v4.15.5
+    offset: 2280
+  - min_kernel: v4.15.7
+    max_kernel: v4.15.18
+    offset: 2280
+  - min_kernel: v4.16
+    max_kernel: v4.16.3
+    offset: 2280
+  - min_kernel: v4.16.4
+    max_kernel: v4.16.18
+    offset: 2216
+  - min_kernel: v4.17
+    max_kernel: v4.17.10
+    offset: 2216
+```
+
+## Future work
+
+- Right now the kernel headers pulled for Ubuntu have the kernel config of the `generic` release of the distribution. Unfortunately, Ubuntu has hundreds of sub versions for each of its releases. Even if the different kernel configs are never too far away from each other, it is enough to make those offsets unusable. A feature that shouldn't be too hard to implement is to provide a path to the kernel config of the host, so that the script can apply the right kernel configuration instead of the default generic one.
+- Support for Debian and other major linux distributions.
